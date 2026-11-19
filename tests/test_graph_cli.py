@@ -22,7 +22,8 @@ class ProcessTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.home = Path(self.temp.name)
         self.env = dict(os.environ)
-        self.env.pop("OPENAI_API_KEY", None)
+        self.env.pop("QWEN_API_KEY", None)
+        self.env.pop("DASHSCOPE_API_KEY", None)
         self.env.pop("TAVILY_API_KEY", None)
 
     def tearDown(self):
@@ -105,7 +106,7 @@ main()
 
     def test_live_credentials_required_no_silent_offline_fallback(self):
         output = self.cli("discover", expected=2)
-        self.assertIn("OPENAI_API_KEY", output)
+        self.assertIn("QWEN_API_KEY", output)
         self.assertEqual(self.cli("list-runs"), "")
 
 

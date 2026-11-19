@@ -183,22 +183,32 @@ If the approved question's central premise lacks evidence, return a reporting br
 """
 
 
-class OpenAIModel:
+class QwenModel:
     def __init__(self, http=None):
-        self.key = os.environ.get("OPENAI_API_KEY")
+        self.key = (os.environ.get("QWEN_API_KEY", "").strip()
+                    or os.environ.get("DASHSCOPE_API_KEY", "").strip())
         if not self.key:
-            raise AdapterError("Live mode requires OPENAI_API_KEY. Use --offline explicitly for sample material.")
+            raise AdapterError("Live mode requires QWEN_API_KEY (or DASHSCOPE_API_KEY). "
+                               "Use --offline explicitly for sample material.")
+        self.base_url = os.environ.get("QWEN_BASE_URL", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1").strip().rstrip("/")
+        canonical_url(self.base_url)
+        self.model = os.environ.get("QWEN_MODEL", "qwen-plus").strip()
+        if not self.model:
+            raise AdapterError("QWEN_MODEL must name an enabled Qwen model, for example qwen-plus.")
         self.http = http or HTTP()
 
     def ask(self, task, instructions, data):
-        raw, _ = self.http.request(os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-                                   + "/chat/completions", {
-            "model": os.environ.get("OPENAI_MODEL", "gpt-4.1-mini"), "temperature": 0,
+        raw, _ = self.http.request(self.base_url + "/chat/completions", {
+            "model": self.model, "temperature": 0,
+            "stream": False, "enable_thinking": False,
             "response_format": {"type": "json_object"},
             "messages": [{"role": "system", "content": SYSTEM + "\n" + instructions},
                          {"role": "user", "content": json.dumps({"task": task, "data": data})}],
         }, {"Authorization": f"Bearer {self.key}"})
         try:
-            return json.loads(json.loads(raw)["choices"][0]["message"]["content"])
+            result = json.loads(json.loads(raw)["choices"][0]["message"]["content"])
+            if not isinstance(result, dict):
+                raise ValueError("Expected a JSON object")
+            return result
         except (ValueError, KeyError, IndexError, TypeError) as e:
-            raise AdapterError(f"Model returned invalid JSON for {task}") from e
+            raise AdapterError(f"Qwen returned invalid JSON for {task}") from e

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from .adapters import AdapterError, LiveDiscovery, LivePages, LiveSearch, OpenAIModel
+from .adapters import AdapterError, LiveDiscovery, LivePages, LiveSearch, QwenModel
 from .fixture import FixtureDiscovery, FixtureModel, FixturePages, FixtureSearch
 from .graph import graph_config, is_interrupted, open_graph
 from .storage import Store
@@ -19,7 +19,7 @@ def runtime(store, mode, config):
     if mode == "offline":
         return EditorialWorkflow(store, FixtureDiscovery(), FixtureSearch(), FixturePages(), FixtureModel())
     # Validate all credentials before discovering anything. No implicit offline fallback.
-    model, search = OpenAIModel(), LiveSearch()
+    model, search = QwenModel(), LiveSearch()
     return EditorialWorkflow(store, LiveDiscovery(config["feeds"]), search, LivePages(), model)
 
 
