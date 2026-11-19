@@ -54,7 +54,7 @@ Discovery in the same home suppresses events already shortlisted, even if dismis
 
 ## Live mode
 
-The real model adapter uses the OpenAI Chat Completions JSON API; follow-up searches use Tavily. Pages are fetched separately: search snippets never become claim evidence. Feed/page retrieval does not require credentials.
+The real model adapter calls **Qwen through Alibaba Cloud Model Studio/DashScope**. No OpenAI API key or OpenAI Python package is required. The HTTP request uses Qwen's compatible chat-completions interface with JSON output and thinking disabled. Follow-up searches use Tavily. Pages are fetched separately: search snippets never become claim evidence. Feed/page retrieval does not require credentials.
 
 ```bash
 cp .env.example .env
@@ -68,7 +68,11 @@ python -m deluxe list-runs
 python -m deluxe resume RUN_ID --select 1 --question 'Your specific reader question?'
 ```
 
-Required: `OPENAI_API_KEY`, `TAVILY_API_KEY`. Optional: `OPENAI_MODEL` (default `gpt-4.1-mini`), `OPENAI_BASE_URL` (default `https://api.openai.com/v1`), `DELUXE_HOME` (default `.deluxe`). `.env` is **not automatically loaded**. Keys are not saved in checkpoints. Both credentials are checked before live discovery, including when the search budget is zero. Inspecting or dismissing an already saved live shortlist does not need credentials. Actual live model calls incur provider charges.
+Required: `QWEN_API_KEY` (or `DASHSCOPE_API_KEY`) and `TAVILY_API_KEY`. `QWEN_API_KEY` takes precedence if both model keys are set. Optional: `QWEN_MODEL` (default `qwen-plus`), `QWEN_BASE_URL` (default `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`), `DELUXE_HOME` (default `.deluxe`). Use a model supporting JSON output in non-thinking mode. The adapter never reads `OPENAI_API_KEY`.
+
+Set `QWEN_BASE_URL` to the compatible-mode base URL for your key's region and workspace, as shown in your Alibaba Model Studio console. For example, Beijing uses `https://dashscope.aliyuncs.com/compatible-mode/v1`; some Singapore workspaces use `https://YOUR_WORKSPACE_ID.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1`. Do not include `/chat/completions`; the adapter appends it. See Alibaba's [Qwen JSON output documentation](https://www.alibabacloud.com/help/en/model-studio/qwen-structured-output) for supported models and regional examples. Account/region access must still be verified with your real key.
+
+`.env` is **not automatically loaded**. Keys are not saved in checkpoints. Model and search credentials are checked before live discovery, including when the search budget is zero. Inspecting or dismissing an already saved live shortlist does not need credentials. Actual live calls incur provider charges.
 
 The search budget is **0–10 search requests**, not tokens or money. The planner chooses each next query from the question, fetched sources and earlier searches. Each request returns at most four results; at most 16 source pages are retained. Failed requests consume budget and are reported. Model calls for grouping, planning, extraction, drafting and verification are additional. A zero search budget still fetches the original discovery sources.
 
@@ -125,3 +129,12 @@ python -m unittest discover -v
 The standard-library test suite covers both fixture outcomes, RSS/Atom/date handling, grouped syndication, duplicate ledgers, budget enforcement, unavailable sources/search, missing credentials, fabricated supporting passages, verification rejection and invalid editorial choices. Real LangGraph tests launch separate CLI processes to prove shortlist persistence, revised-question persistence, approval recovery after a research failure, dismissal and duplicate detection after restart. These integration tests are explicitly skipped if LangGraph is absent; install dependencies to run the complete suite.
 
 Live API compatibility, provider permissions, model quality on actual news and full feed/page availability require live credentials and network access. Offline tests do not claim to verify those.
+
+## Remaining work and current limitations
+
+- **Not live-validated:** a full Qwen + Tavily + RSS run with real credentials; full successful parsing of the starter feeds. Adapter tests use mocked HTTP and the offline acceptance scenarios use deterministic sample responses.
+- **Partial event/date handling:** feeds preserve supplied publication dates; live event dates are proposed during pitch grouping. There is no dedicated page-metadata event-date extractor or field-level provenance for event dates. Unknown dates remain empty.
+- **Partial duplicate handling:** canonical URLs and model-proposed event keys are stored, but no content-fingerprint/syndication detector is implemented. Model-assisted matching can miss paraphrases, and the URL ledger can suppress a fresh development posted at an already-seen URL.
+- **Verification removes rather than rewrites:** the verifier checks semantic support and scope; unsupported paragraphs are dropped or a brief is produced. There is no automated revision-and-reverification loop. Independent-source discovery is guided by prompts rather than a mandatory corroboration policy.
+- **No automatic API retries/backoff or token-cost accounting:** failed graph steps can be resumed manually. The budget limits search calls only.
+- **No browser-rendered retrieval, interview execution or hands-on product testing:** inaccessible pages and required human reporting become explicit gaps/tasks. A GUI, scheduling and publication integrations are outside the requested CLI version.
