@@ -76,6 +76,20 @@ class WorkflowTests(unittest.TestCase):
         self.assertFalse((output / "reporting-notes.md").exists())
         self.assertIn("Kenyan merchant payouts", state["search_log"][0]["query"])
 
+    def test_provider_fallback_preserves_payout_brief_outcome(self):
+        from unittest.mock import Mock
+        from deluxe.adapters import FallbackModel
+        primary = Mock()
+        primary.ask.side_effect = AdapterError("Groq unavailable")
+        self.workflow.model = FallbackModel(lambda: primary, FixtureModel)
+        with self.assertWarnsRegex(RuntimeWarning, "trying Qwen fallback"):
+            state = self.complete(self.discover(), PAYOUT)
+        self.assertEqual(state["approved_question"], PAYOUT)
+        self.assertEqual(state["verification"]["outcome"], "reporting_brief")
+        self.assertTrue((self.home / "outputs/test/reporting-brief.md").exists())
+        self.assertFalse((self.home / "outputs/test/article.md").exists())
+        self.assertGreaterEqual(primary.ask.call_count, 5)
+
     def test_syndicated_coverage_grouped_and_old_launch_rejected(self):
         state = self.discover()
         self.assertEqual(len(state["candidates"]), 3)
