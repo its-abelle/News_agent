@@ -171,6 +171,17 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(len(extracted["evidence"]), 1)
         self.assertIn("Rejected claim", extracted["errors"][-1])
 
+    def test_excerpt_review_records_gap_and_keeps_full_sources(self):
+        state = self.discover()
+        state.update(self.workflow.select(state, {"action": "select", "pitch_id": "1"}))
+        state.update(self.workflow.research_start(state))
+        for item in state["sources"]:
+            item["text"] += " Unreviewed background. " * 2000
+        original = [item["text"] for item in state["sources"]]
+        result = self.workflow.extract(state)
+        self.assertTrue(any("selected source excerpts" in e for e in result["errors"]))
+        self.assertEqual([item["text"] for item in state["sources"]], original)
+
     def test_verification_removes_unsupported_geographic_claim(self):
         state = self.complete(self.discover())
         state["draft"]["blocks"].append({"text": "Kenyan merchants can receive M-Pesa payouts.", "claim_ids": ["C999"]})

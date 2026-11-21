@@ -5,6 +5,7 @@ import re
 from datetime import datetime, timedelta
 
 from .adapters import AdapterError, canonical_url, parse_date
+from .context import source_context
 
 
 def normalise(text):
@@ -47,6 +48,8 @@ not search snippets. Return {"claims": [{"text": ..., "source_id": ..., "passage
 "attribution": ..., "kind": "vendor_assertion"|"independent"|"documented",
 "geographic_scope": ...}], "reporting_tasks": [specific interview/document/test requests]}.
 The passage MUST be a verbatim contiguous excerpt from that source. Keep claims narrow.
+Sources may contain marked excerpt boundaries. Do not quote across boundaries or infer absence
+from omitted text; record the need to check unreviewed sections as a reporting task.
 Vendor assertions require explicit attribution IN the claim text. A syndicated vendor release is
 not independent corroboration. State unknowns as reporting tasks, never as positive facts.
 """
@@ -66,6 +69,8 @@ are not evidence. Remove unsupported generalisations, claims and quotes; safe_bl
 include only paragraphs fully supported or clearly framed non-factual editorial advice.
 The central premise of the approved question must be established by evidence; an article about
 generation does not answer a payouts question. If it is not established, central_supported=false.
+Source text may be marked as excerpted. Never treat omitted text as evidence of absence, quote
+across excerpt boundaries, or generalise beyond the explicit scope of the supporting passage.
 Return {"central_supported": bool, "supported_claim_ids": [...], "safe_block_indices": [0,...],
 "title_supported": bool, "issues": [specific gaps], "reporting_tasks": [specific next steps]}.
 If all evidence is vendor claims, allow only explicitly attributed descriptive reporting, not performance
@@ -181,7 +186,8 @@ class EditorialWorkflow:
             return {}
         response = self.model.ask("plan_search", PLAN_INSTRUCTIONS, {
             "approved_question": state["approved_question"], "selected_pitch": state["selected_pitch"],
-            "sources": state["sources"], "searches_used": used, "remaining_budget": budget - used,
+            "sources": source_context(state["sources"], state["approved_question"]),
+            "searches_used": used, "remaining_budget": budget - used,
             "search_log": state["search_log"]})
         query = response.get("query")
         if not isinstance(query, str) or not query.strip() or any(x["query"] == query for x in state["search_log"]):
@@ -204,10 +210,19 @@ class EditorialWorkflow:
                 "search_log": state["search_log"] + [entry]}
 
     def extract(self, state):
-        data = {"approved_question": state["approved_question"], "sources": state["sources"]}
+        context = source_context(state["sources"], state["approved_question"])
+        data = {"approved_question": state["approved_question"], "sources": context}
         raw = self.model.ask("extract", EXTRACT_INSTRUCTIONS, data) if state["sources"] else {}
         by_id = {s["id"]: s for s in state["sources"]}
         claims, errors = [], list(state["errors"])
+        if any(s["text_excerpted"] for s in context):
+            note = ("Model review used selected source excerpts to limit request size "
+                    f"({sum(len(s['text']) for s in context)} context characters from "
+                    f"{sum(len(s['text']) for s in state['sources'])} original characters). "
+                    "Full pages remain in the audit snapshot; review omitted sections for qualifiers "
+                    "and missing evidence before publication.")
+            if note not in errors:
+                errors.append(note)
         for c in raw.get("claims", []):
             source = by_id.get(c.get("source_id"))
             passage = normalise(c.get("passage", ""))
@@ -241,7 +256,7 @@ class EditorialWorkflow:
         else:
             verdict = self.model.ask("verify", VERIFY_INSTRUCTIONS, {
                 "approved_question": state["approved_question"], "draft": state["draft"],
-                "evidence": evidence, "sources": state["sources"]})
+                "evidence": evidence, "sources": source_context(state["sources"], state["approved_question"])})
         supported = set(verdict.get("supported_claim_ids", [])) & {c["id"] for c in evidence}
         safe = verdict.get("safe_block_indices", [])
         blocks = []
