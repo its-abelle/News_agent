@@ -6,6 +6,7 @@ import re
 import socket
 import urllib.error
 import urllib.request
+import warnings
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -183,6 +184,50 @@ If the approved question's central premise lacks evidence, return a reporting br
 """
 
 
+def chat_json(http, provider, base_url, key, model, task, instructions, data, extra=None):
+    """Common chat-completions wire format; credentials stay with their provider."""
+    raw, _ = http.request(base_url + "/chat/completions", {
+        "model": model, "temperature": 0, "stream": False,
+        "response_format": {"type": "json_object"},
+        "messages": [{"role": "system", "content": SYSTEM + "\n" + instructions},
+                     {"role": "user", "content": json.dumps({"task": task, "data": data})}],
+        **(extra or {}),
+    }, {"Authorization": f"Bearer {key}"})
+    try:
+        result = json.loads(json.loads(raw)["choices"][0]["message"]["content"])
+        if not isinstance(result, dict):
+            raise ValueError("Expected a JSON object")
+        return result
+    except (ValueError, KeyError, IndexError, TypeError) as e:
+        raise AdapterError(f"{provider} returned invalid JSON for {task}") from e
+
+
+def model_settings(prefix, default_url, default_model):
+    base_url = os.environ.get(prefix + "_BASE_URL", default_url).strip().rstrip("/")
+    try:
+        canonical_url(base_url)
+    except ValueError as e:
+        raise AdapterError(f"{prefix}_BASE_URL must be a valid HTTP(S) compatible API base URL.") from e
+    model = os.environ.get(prefix + "_MODEL", default_model).strip()
+    if not model:
+        raise AdapterError(f"{prefix}_MODEL must name an enabled model, for example {default_model}.")
+    return base_url, model
+
+
+class GroqModel:
+    def __init__(self, http=None):
+        self.key = os.environ.get("GROQ_API_KEY", "").strip()
+        if not self.key:
+            raise AdapterError("Groq requires GROQ_API_KEY.")
+        self.base_url, self.model = model_settings("GROQ", "https://api.groq.com/openai/v1",
+                                                  "openai/gpt-oss-20b")
+        self.http = http or HTTP()
+
+    def ask(self, task, instructions, data):
+        return chat_json(self.http, "Groq", self.base_url, self.key, self.model,
+                         task, instructions, data)
+
+
 class QwenModel:
     def __init__(self, http=None):
         self.key = (os.environ.get("QWEN_API_KEY", "").strip()
@@ -190,25 +235,42 @@ class QwenModel:
         if not self.key:
             raise AdapterError("Live mode requires QWEN_API_KEY (or DASHSCOPE_API_KEY). "
                                "Use --offline explicitly for sample material.")
-        self.base_url = os.environ.get("QWEN_BASE_URL", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1").strip().rstrip("/")
-        canonical_url(self.base_url)
-        self.model = os.environ.get("QWEN_MODEL", "qwen-plus").strip()
-        if not self.model:
-            raise AdapterError("QWEN_MODEL must name an enabled Qwen model, for example qwen-plus.")
+        self.base_url, self.model = model_settings("QWEN", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                                                  "qwen-plus")
         self.http = http or HTTP()
 
     def ask(self, task, instructions, data):
-        raw, _ = self.http.request(self.base_url + "/chat/completions", {
-            "model": self.model, "temperature": 0,
-            "stream": False, "enable_thinking": False,
-            "response_format": {"type": "json_object"},
-            "messages": [{"role": "system", "content": SYSTEM + "\n" + instructions},
-                         {"role": "user", "content": json.dumps({"task": task, "data": data})}],
-        }, {"Authorization": f"Bearer {self.key}"})
+        return chat_json(self.http, "Qwen", self.base_url, self.key, self.model,
+                         task, instructions, data, {"enable_thinking": False})
+
+
+class FallbackModel:
+    """Try Groq first on each call; lazily configure Qwen only after failure."""
+    def __init__(self, primary_factory=None, fallback_factory=None):
+        self.primary_factory = primary_factory or GroqModel
+        self.fallback_factory = fallback_factory or QwenModel
+
+    def ask(self, task, instructions, data):
         try:
-            result = json.loads(json.loads(raw)["choices"][0]["message"]["content"])
-            if not isinstance(result, dict):
-                raise ValueError("Expected a JSON object")
-            return result
-        except (ValueError, KeyError, IndexError, TypeError) as e:
-            raise AdapterError(f"Qwen returned invalid JSON for {task}") from e
+            return self.primary_factory().ask(task, instructions, data)
+        except AdapterError:
+            # Only provider/configuration failures qualify. Programming errors propagate.
+            pass
+        try:
+            fallback = self.fallback_factory()
+        except AdapterError as error:
+            raise AdapterError("Groq failed and Qwen fallback is unavailable. Check GROQ_API_KEY, "
+                               "or configure QWEN_API_KEY (or DASHSCOPE_API_KEY) and QWEN settings.") from error
+        warnings.warn(f"Groq failed; trying Qwen fallback for {task}.", RuntimeWarning, stacklevel=2)
+        try:
+            return fallback.ask(task, instructions, data)
+        except AdapterError as error:
+            raise AdapterError(f"Groq and Qwen both failed for {task}. Check connectivity, credentials, "
+                               "account limits and model settings; resume the saved run to retry.") from error
+
+
+def live_model():
+    if not any(os.environ.get(key, "").strip() for key in ("GROQ_API_KEY", "QWEN_API_KEY", "DASHSCOPE_API_KEY")):
+        raise AdapterError("Live mode requires GROQ_API_KEY. Optional Qwen fallback uses QWEN_API_KEY "
+                           "(or DASHSCOPE_API_KEY). Use --offline explicitly for sample material.")
+    return FallbackModel()

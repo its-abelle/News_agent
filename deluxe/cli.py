@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from .adapters import AdapterError, LiveDiscovery, LivePages, LiveSearch, QwenModel
+from .adapters import AdapterError, LiveDiscovery, LivePages, LiveSearch, live_model
 from .fixture import FixtureDiscovery, FixtureModel, FixturePages, FixtureSearch
 from .graph import graph_config, is_interrupted, open_graph
 from .storage import Store
@@ -18,8 +18,8 @@ from .workflow import EditorialWorkflow
 def runtime(store, mode, config):
     if mode == "offline":
         return EditorialWorkflow(store, FixtureDiscovery(), FixtureSearch(), FixturePages(), FixtureModel())
-    # Validate all credentials before discovering anything. No implicit offline fallback.
-    model, search = QwenModel(), LiveSearch()
+    # A working primary needs no fallback key. No implicit offline fixture fallback.
+    model, search = live_model(), LiveSearch()
     return EditorialWorkflow(store, LiveDiscovery(config["feeds"]), search, LivePages(), model)
 
 
