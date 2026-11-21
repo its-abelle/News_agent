@@ -6,3 +6,5 @@ __pycache__/
 .deluxe/
 dist/
 build/
+# Accidental nested checkout; keep it locally without staging it as a submodule.
+/News_agent/
