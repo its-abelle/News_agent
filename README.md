@@ -76,13 +76,15 @@ The **optional fallback** uses `QWEN_API_KEY` (or `DASHSCOPE_API_KEY`); `QWEN_AP
 
 Set `QWEN_BASE_URL` to the compatible-mode base URL for your key's region and workspace, as shown in your Alibaba Model Studio console. For example, Beijing uses `https://dashscope.aliyuncs.com/compatible-mode/v1`; some Singapore workspaces use `https://YOUR_WORKSPACE_ID.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1`. Do not include `/chat/completions`; the adapter appends it. See Alibaba's [Qwen JSON output documentation](https://www.alibabacloud.com/help/en/model-studio/qwen-structured-output) for supported models and regional examples. Account/region access must still be verified with your real key.
 
-Every model call tries Groq first. A missing Groq key, invalid provider configuration, request failure (including authentication, rate limits, timeouts and server errors), or malformed/non-object JSON response triggers one Qwen attempt with the same task, approved question and source data. Fallback use emits a terminal warning. Each subsequent call tries Groq first again. There is no retry loop or circuit breaker. A syntactically valid JSON object that fails editorial checks is handled by the normal reporting/verification stages; it does not automatically trigger a second provider call.
+Every model call tries Groq first. A missing Groq key, invalid provider configuration, request failure (including authentication, rate limits, timeouts and server errors), or malformed/non-object JSON response triggers one Qwen attempt with the same task, approved question and source data. Fallback use emits a terminal warning, including a safe diagnostic such as HTTP 429 (rate/quota limit), HTTP 401 (authentication) or invalid JSON. When both fail, both diagnostics are reported without raw provider response bodies. Each subsequent call tries Groq first again. There is no retry loop or circuit breaker. A syntactically valid JSON object that fails editorial checks is handled by the normal reporting/verification stages; it does not automatically trigger a second provider call.
 
 A missing Qwen key **does not block working Groq**. If Groq fails without a usable Qwen configuration, the command reports an error and retains the checkpoint. If both providers fail, it reports that both failed; restore access and `resume RUN_ID` to retry. If Groq is not configured but Qwen is, the Qwen-only route remains usable with a fallback warning. Fallback never selects fixture data. The terminal warnings identify providers but do not expose provider error bodies or keys.
 
 `.env` is **not automatically loaded**. Keys are not saved in checkpoints. At least one model key and the Tavily search key must be present before live discovery, even when the search budget is zero. Provider settings are validated when that provider is attempted. Inspecting or dismissing an already saved live shortlist needs no credentials. Actual live calls incur provider charges; fallback can add an extra model request per failed primary call. Tavily CLI login is separate from this Python application's `TAVILY_API_KEY` environment setting.
 
 The search budget is **0–10 search requests**, not tokens or money. The planner chooses each next query from the question, fetched sources and earlier searches. Each request returns at most four results; at most 16 source pages are retained. Failed requests consume budget and are reported. Model calls for grouping, planning, extraction, drafting and verification are additional. A zero search budget still fetches the original discovery sources.
+
+Planning, extraction and verification use bounded source excerpts instead of sending every full page in a single request. `DELUXE_SOURCE_CONTEXT_CHARS` defaults to **12000 total source-text characters per request** (range 2000–48000). This is a character budget, not a token or monetary limit; prompts, metadata, evidence and draft text add to the request. Excerpts retain opening context, question-matching blocks and closing qualifiers, while full pages remain unchanged in checkpoints and `audit.json`. When pages are excerpted, reporting notes explicitly flag omitted sections for editor review. An omitted passage is not evidence that a capability is absent. Excerpt selection can miss important context; narrow the question and review source pages before publication.
 
 ### Sources
 
@@ -118,6 +120,14 @@ outputs/<run-id>/
 Run IDs are generated UUIDs and become LangGraph `thread_id`s. The graph pauses using `interrupt()` and resumes with `Command(resume=...)`. Approved questions and editor choices are checkpointed before research. A synchronous SQLite saver implements LangGraph's checkpoint API, stores full channel snapshots with its typed serializer, and commits pending writes separately. It supports this CLI's ordinary state channels; async graphs and delta channels are outside version one's scope. Use one active process per run. Do not edit checkpoint databases or open databases from untrusted sources.
 
 After a transient error, restore credentials/connectivity and run `resume RUN_ID` to retry from the saved graph step. If approval itself was not checkpointed, the saved shortlist remains paused and displays the selection command again. A crash before the very first checkpoint requires a new discovery run. Page/search failures are recorded as gaps rather than treated as positive evidence. Model/API failures stop the run with an explicit error.
+
+After a failure **following selection**, retry with no selection flags:
+
+```bash
+python -m deluxe --home .deluxe/live-test resume RUN_ID
+```
+
+Do not repeat `--select` or `--question`: the original choice and question are already saved. The CLI prints the exact continuation command when work fails. A generic question such as "How can SMEs maximise profits with technology?" is much broader than a news-event angle and may correctly result in a reporting brief. Prefer a specific reader, development and cost/revenue question when approving a new pitch.
 
 ## Editorial and verification rules
 
