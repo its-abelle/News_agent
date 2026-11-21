@@ -144,6 +144,41 @@ class ModelRoutingTests(unittest.TestCase):
             with self.assertWarns(RuntimeWarning):
                 self.assertEqual(model.ask("extract", "instructions", {}), {"claims": []})
 
+    def test_both_provider_statuses_are_visible_without_response_body(self):
+        http = RecordingHTTP(AdapterError("primary-secret", status=429), AdapterError("fallback-secret", status=401))
+        with patch.dict("os.environ", {"GROQ_API_KEY": "groq-test", "QWEN_API_KEY": "qwen-test"}, clear=True):
+            model = FallbackModel(lambda: GroqModel(http), lambda: QwenModel(http))
+            with self.assertWarnsRegex(RuntimeWarning, "HTTP 429"), self.assertRaises(AdapterError) as raised:
+                model.ask("extract", "Extract JSON.", {})
+        message = str(raised.exception)
+        self.assertIn("Groq: HTTP 429", message)
+        self.assertIn("Qwen: HTTP 401", message)
+        self.assertNotIn("primary-secret", message)
+        self.assertNotIn("fallback-secret", message)
+
+    def test_http_error_is_classified_without_reading_body(self):
+        import urllib.error
+        from deluxe.adapters import HTTP
+        body = Mock()
+        http = HTTP()
+        http.opener = Mock()
+        http.opener.open.side_effect = urllib.error.HTTPError(
+            "https://api.groq.com/openai/v1/chat/completions", 413, "Too large", {}, body)
+        with patch("deluxe.adapters.public_url"), self.assertRaises(AdapterError) as raised:
+            http.request("https://api.groq.com/openai/v1/chat/completions", {})
+        self.assertEqual(raised.exception.status, 413)
+        self.assertIn("request too large", raised.exception.diagnostic())
+        body.read.assert_not_called()
+        body.close.assert_called_once()
+
+    def test_truncated_response_is_distinguished_from_bad_json(self):
+        http = RecordingHTTP(json.dumps({"choices": [{"finish_reason": "length", "message": {"content": "{"}}]}))
+        with patch.dict("os.environ", {"GROQ_API_KEY": "groq-test"}, clear=True):
+            with self.assertRaises(AdapterError) as raised:
+                GroqModel(http).ask("extract", "Return JSON.", {})
+        self.assertEqual(raised.exception.category, "truncated")
+        self.assertIn("output token limit", raised.exception.diagnostic())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -97,6 +97,10 @@ main()
                                 cwd=ROOT, env=self.env, capture_output=True, text=True, timeout=30)
         self.assertEqual(failed.returncode, 2, failed.stderr)
         self.assertIn("Work checkpointed", failed.stderr)
+        self.assertIn("Retry without --select or --question", failed.stderr)
+        repeated = self.cli("resume", run, "--select", "1", "--question", PAYOUT, expected=2)
+        self.assertIn("without --select or --question", repeated)
+        self.assertIn(f"resume {run}", repeated)
         # New process with normal adapters retries the failed node without a new choice.
         self.cli("resume", run)
         folder = self.home / "outputs" / run

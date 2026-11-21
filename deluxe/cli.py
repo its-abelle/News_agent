@@ -15,6 +15,10 @@ from .storage import Store
 from .workflow import EditorialWorkflow
 
 
+def resume_command(home, run_id):
+    return f"python -m deluxe --home {shlex.quote(str(home.resolve()))} resume {shlex.quote(run_id)}"
+
+
 def runtime(store, mode, config):
     if mode == "offline":
         return EditorialWorkflow(store, FixtureDiscovery(), FixtureSearch(), FixturePages(), FixtureModel())
@@ -57,7 +61,7 @@ def show(state, home, interrupted=False):
     if state.get("approved_question"):
         print(f"\nApproved question: {state['approved_question']}")
     if interrupted:
-        prefix = f"python -m deluxe --home {shlex.quote(str(home.resolve()))} resume {state['run_id']}"
+        prefix = resume_command(home, state["run_id"])
         print(f"\nPaused for the editor. Continue with:\n{prefix} --select 1")
         print(f"Revise the angle:\n{prefix} --select 1 --question 'Your reader question here?'")
         print(f"Dismiss:\n{prefix} --dismiss")
@@ -94,7 +98,7 @@ def run(args, store):
                 graph.invoke(initial, graph_config(run_id))
             except Exception:
                 store.status(run_id, "error")
-                print(f"Run saved. Retry: python -m deluxe --home {shlex.quote(str(store.home.resolve()))} resume {run_id}", file=sys.stderr)
+                print(f"Run saved. Retry: {resume_command(store.home, run_id)}", file=sys.stderr)
                 raise
             snapshot = graph.get_state(graph_config(run_id))
             store.status(run_id, snapshot.values["status"])
@@ -117,7 +121,9 @@ def run(args, store):
             show(snapshot.values, store.home, pending)
             return
         if (args.select or args.dismiss) and not pending:
-            raise ValueError("This run is not awaiting an editorial decision; its saved decision cannot be replaced")
+            verb = "Retry the saved work" if snapshot.next else "Inspect the saved outcome"
+            raise ValueError("This run is not awaiting an editorial decision; its saved decision cannot be replaced. "
+                             f"{verb} without --select or --question:\n{resume_command(store.home, args.run_id)}")
         decision = {"action": "dismiss"} if args.dismiss else {"action": "select", "pitch_id": args.select}
         if args.question is not None:
             decision["question"] = args.question
@@ -132,7 +138,8 @@ def run(args, store):
             graph.invoke(Command(resume=decision) if pending else None, graph_config(args.run_id))
         except Exception:
             store.status(args.run_id, "error")
-            print("Work checkpointed; resume the same run ID to retry. No fixture fallback was used.", file=sys.stderr)
+            print("Work checkpointed. Retry without --select or --question:\n"
+                  f"{resume_command(store.home, args.run_id)}\nNo fixture fallback was used.", file=sys.stderr)
             raise
         snapshot = graph.get_state(graph_config(args.run_id))
         store.status(args.run_id, snapshot.values["status"])

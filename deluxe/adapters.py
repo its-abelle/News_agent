@@ -15,7 +15,35 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 
 class AdapterError(RuntimeError):
-    pass
+    def __init__(self, message, *, status=None, category=None):
+        super().__init__(message)
+        self.status = status
+        self.category = category
+
+    def diagnostic(self):
+        """Report only allowlisted diagnostics, never provider response bodies."""
+        descriptions = {
+            400: "invalid request; check model, input size and request options",
+            401: "authentication failed; check the API key",
+            402: "billing or credit access required",
+            403: "access denied; check account, region and model permissions",
+            404: "endpoint or model not found",
+            408: "request timed out",
+            413: "request too large",
+            422: "request validation failed",
+            429: "rate limit or quota reached",
+        }
+        if isinstance(self.status, int) and 100 <= self.status <= 599:
+            description = descriptions.get(self.status, "provider server error" if self.status >= 500 else "request failed")
+            return f"HTTP {self.status} ({description})"
+        return {
+            "network": "network/DNS connection failed",
+            "timeout": "request timed out",
+            "invalid_json": "response was not a valid JSON object",
+            "truncated": "response reached the output token limit",
+            "configuration": "provider configuration is missing or invalid",
+            "response_limit": "response exceeded the download size limit",
+        }.get(self.category, "request failed")
 
 
 def canonical_url(url):
@@ -53,7 +81,7 @@ def public_url(url):
     try:
         addresses = socket.getaddrinfo(p.hostname, p.port or (443 if p.scheme == "https" else 80))
     except OSError as e:
-        raise AdapterError(f"Cannot resolve source host {p.hostname}: {e}") from e
+        raise AdapterError(f"Cannot resolve source host {p.hostname}", category="network") from e
     if any(not ipaddress.ip_address(a[4][0]).is_global for a in addresses):
         raise AdapterError("Source URL resolves to a private or reserved address")
 
@@ -78,11 +106,18 @@ class HTTP:
             with self.opener.open(req, timeout=25) as response:
                 raw = response.read(2_000_001)
                 if len(raw) > 2_000_000:
-                    raise AdapterError("Response exceeds 2 MB limit")
+                    raise AdapterError("Response exceeds 2 MB limit", category="response_limit")
                 return raw.decode("utf-8", errors="replace"), response.geturl()
+        except urllib.error.HTTPError as e:
+            error = AdapterError("Provider HTTP request failed", status=e.code)
+            e.close()
+            raise AdapterError(f"HTTP request failed for {urlsplit(url).hostname}: {error.diagnostic()}",
+                               status=e.code) from e
         except (OSError, urllib.error.URLError) as e:
             # Do not echo requests, bodies or credentials.
-            raise AdapterError(f"HTTP request failed for {urlsplit(url).hostname}: {type(e).__name__}") from e
+            category = "timeout" if isinstance(e, TimeoutError) else "network"
+            raise AdapterError(f"HTTP request failed for {urlsplit(url).hostname}: {type(e).__name__}",
+                               category=category) from e
 
 
 def parse_feed(xml, publisher, region, base_url):
@@ -194,12 +229,17 @@ def chat_json(http, provider, base_url, key, model, task, instructions, data, ex
         **(extra or {}),
     }, {"Authorization": f"Bearer {key}"})
     try:
-        result = json.loads(json.loads(raw)["choices"][0]["message"]["content"])
+        choice = json.loads(raw)["choices"][0]
+        if not isinstance(choice, dict):
+            raise ValueError("Expected a chat-completion choice object")
+        if choice.get("finish_reason") == "length":
+            raise AdapterError(f"{provider} response reached its output token limit for {task}", category="truncated")
+        result = json.loads(choice["message"]["content"])
         if not isinstance(result, dict):
             raise ValueError("Expected a JSON object")
         return result
     except (ValueError, KeyError, IndexError, TypeError) as e:
-        raise AdapterError(f"{provider} returned invalid JSON for {task}") from e
+        raise AdapterError(f"{provider} returned invalid JSON for {task}", category="invalid_json") from e
 
 
 def model_settings(prefix, default_url, default_model):
@@ -207,10 +247,10 @@ def model_settings(prefix, default_url, default_model):
     try:
         canonical_url(base_url)
     except ValueError as e:
-        raise AdapterError(f"{prefix}_BASE_URL must be a valid HTTP(S) compatible API base URL.") from e
+        raise AdapterError(f"{prefix}_BASE_URL must be a valid HTTP(S) compatible API base URL.", category="configuration") from e
     model = os.environ.get(prefix + "_MODEL", default_model).strip()
     if not model:
-        raise AdapterError(f"{prefix}_MODEL must name an enabled model, for example {default_model}.")
+        raise AdapterError(f"{prefix}_MODEL must name an enabled model, for example {default_model}.", category="configuration")
     return base_url, model
 
 
@@ -218,7 +258,7 @@ class GroqModel:
     def __init__(self, http=None):
         self.key = os.environ.get("GROQ_API_KEY", "").strip()
         if not self.key:
-            raise AdapterError("Groq requires GROQ_API_KEY.")
+            raise AdapterError("Groq requires GROQ_API_KEY.", category="configuration")
         self.base_url, self.model = model_settings("GROQ", "https://api.groq.com/openai/v1",
                                                   "openai/gpt-oss-20b")
         self.http = http or HTTP()
@@ -234,7 +274,7 @@ class QwenModel:
                     or os.environ.get("DASHSCOPE_API_KEY", "").strip())
         if not self.key:
             raise AdapterError("Live mode requires QWEN_API_KEY (or DASHSCOPE_API_KEY). "
-                               "Use --offline explicitly for sample material.")
+                               "Use --offline explicitly for sample material.", category="configuration")
         self.base_url, self.model = model_settings("QWEN", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
                                                   "qwen-plus")
         self.http = http or HTTP()
@@ -253,20 +293,23 @@ class FallbackModel:
     def ask(self, task, instructions, data):
         try:
             return self.primary_factory().ask(task, instructions, data)
-        except AdapterError:
+        except AdapterError as error:
             # Only provider/configuration failures qualify. Programming errors propagate.
-            pass
+            primary_diagnostic = error.diagnostic()
         try:
             fallback = self.fallback_factory()
         except AdapterError as error:
             raise AdapterError("Groq failed and Qwen fallback is unavailable. Check GROQ_API_KEY, "
-                               "or configure QWEN_API_KEY (or DASHSCOPE_API_KEY) and QWEN settings.") from error
-        warnings.warn(f"Groq failed; trying Qwen fallback for {task}.", RuntimeWarning, stacklevel=2)
+                               "or configure QWEN_API_KEY (or DASHSCOPE_API_KEY) and QWEN settings. "
+                               f"Groq: {primary_diagnostic}; Qwen: {error.diagnostic()}.") from error
+        warnings.warn(f"Groq failed; trying Qwen fallback for {task}. Groq: {primary_diagnostic}.",
+                      RuntimeWarning, stacklevel=2)
         try:
             return fallback.ask(task, instructions, data)
         except AdapterError as error:
             raise AdapterError(f"Groq and Qwen both failed for {task}. Check connectivity, credentials, "
-                               "account limits and model settings; resume the saved run to retry.") from error
+                               "account limits and model settings; resume the saved run to retry. "
+                               f"Groq: {primary_diagnostic}; Qwen: {error.diagnostic()}.") from error
 
 
 def live_model():
