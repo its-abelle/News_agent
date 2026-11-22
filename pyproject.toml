@@ -11,9 +11,10 @@ dependencies = ["langgraph>=1.0,<2"]
 
 [project.scripts]
 deluxe = "deluxe.cli:main"
+news-agent = "deluxe.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["deluxe*"]
 
 [tool.setuptools.package-data]
-deluxe = ["*.json"]
+deluxe = ["*.json", "ui/*.html", "ui/*.css", "ui/*.js"]

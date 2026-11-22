@@ -27,8 +27,17 @@ def runtime(store, mode, config):
     return EditorialWorkflow(store, LiveDiscovery(config["feeds"]), search, LivePages(), model)
 
 
+def initial_state(run_id, mode, config):
+    return {"run_id": run_id, "mode": mode, "config": config,
+            "now": datetime.now(timezone.utc).isoformat(), "research_budget": config["search_budget"],
+            "candidates": [], "pitches": [], "editor_decision": {}, "approved_question": "",
+            "evidence": [], "sources": [], "searches_used": 0, "search_log": [],
+            "draft": {}, "verification": {}, "reporting_tasks": [], "errors": [], "outputs": [],
+            "status": "starting"}
+
+
 def parser():
-    p = argparse.ArgumentParser(prog="deluxe", description="Deluxe Studios editorial assistant")
+    p = argparse.ArgumentParser(prog="deluxe", description="News Agent — the Deluxe Studios editorial assistant")
     p.add_argument("--home", type=Path, default=Path(os.environ.get("DELUXE_HOME", ".deluxe")),
                    help="SQLite databases and outputs directory (default: .deluxe)")
     sub = p.add_subparsers(dest="command", required=True)
@@ -44,6 +53,8 @@ def parser():
     action.add_argument("--select", metavar="PITCH_ID")
     action.add_argument("--dismiss", action="store_true")
     r.add_argument("--question", help="Revised reader question, used with --select")
+    web = sub.add_parser("serve", help="Open the local News Agent web workspace")
+    web.add_argument("--port", type=int, default=8765, help="Local HTTP port (default: 8765)")
     return p
 
 
@@ -72,6 +83,10 @@ def show(state, home, interrupted=False):
 
 
 def run(args, store):
+    if args.command == "serve":
+        from .web import serve
+        serve(store.home, args.port)
+        return
     if args.command == "list-runs":
         for row in store.list_runs():
             print(f"{row['id']}  {row['mode']:7}  {row['status']:16}  {row['created_at']}")
@@ -85,12 +100,7 @@ def run(args, store):
         mode = "offline" if args.offline else "live"
         workflow = runtime(store, mode, config)
         run_id = uuid4().hex
-        initial = {"run_id": run_id, "mode": mode, "config": config,
-                   "now": datetime.now(timezone.utc).isoformat(), "research_budget": args.search_budget,
-                   "candidates": [], "pitches": [], "editor_decision": {}, "approved_question": "",
-                   "evidence": [], "sources": [], "searches_used": 0, "search_log": [],
-                   "draft": {}, "verification": {}, "reporting_tasks": [], "errors": [], "outputs": [],
-                   "status": "starting"}
+        initial = initial_state(run_id, mode, config)
         with open_graph(workflow, store.home) as graph:
             store.create(run_id, mode, config)
             print(f"Created run: {run_id}", flush=True)
