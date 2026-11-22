@@ -1,6 +1,6 @@
-# Deluxe Studios editorial assistant
+# News Agent
 
-A small Python/LangGraph CLI for discovering emerging-technology stories, approving a reader question, researching it and exporting a sourced first draft. It serves Kenyan SME owners, brand builders, vibe coders and tech practitioners, using Kenyan and international reporting. Publication stays with the editor.
+A local editorial workspace and Python/LangGraph CLI for Deluxe Studios: discover emerging-technology stories, approve a reader question, research it and edit a sourced first draft. It serves Kenyan SME owners, brand builders, vibe coders and tech practitioners, using Kenyan and international reporting. Publication stays with the editor.
 
 ## Setup
 
@@ -13,7 +13,46 @@ python -m pip install -e .
 python -m unittest discover -v
 ```
 
-The `deluxe` entry point and `python -m deluxe` are equivalent. Commands below assume the virtual environment is active and the repository is your current directory.
+The `news-agent`, `deluxe` and `python -m deluxe` entry points are equivalent. The Python package name remains `deluxe` for compatibility with existing runs. Commands below assume the virtual environment is active and the repository is your current directory.
+
+## Web workspace
+
+Start the dark News Agent workspace with the same storage directory you used for the CLI:
+
+```bash
+cd ~/news_agent
+source .venv/bin/activate
+python -m pip install -e .
+set -a
+source .env
+set +a
+python -m deluxe --home .deluxe/live-test serve --port 8765
+```
+
+Open **http://127.0.0.1:8765** in your browser and keep the terminal running. No Node installation, frontend build or extra Python web dependency is needed to use the UI. If that port is busy, choose another with `--port 8766`. After reinstalling the package, `news-agent --home .deluxe/live-test serve` is also available.
+
+The workspace includes:
+
+- **Editorial desk:** start a live briefing or explicitly choose fictional sample material; configure the look-back window and follow-up search budget.
+- **Saved runs:** open existing CLI runs, return to an interrupted shortlist, or retry failed reporting without repeating editorial approval.
+- **Choose an angle:** inspect the pitch, Kenyan relevance, strongest source and reporting gap; edit the question before approving it.
+- **Reporting progress:** work runs in the background, so navigation and page reloads do not cancel it. One UI reporting job runs at a time to limit concurrent provider traffic. Queued jobs and concurrent duplicate actions are handled explicitly. Keep one active process per run; do not also resume the same run from the CLI while the UI is reporting it.
+- **Review:** read the article or reporting brief, inspect claim passages and attribution, switch to Markdown editing, save and download.
+- **Sources & connections:** inspect the bundled source list and whether provider keys are loaded. Credentials stay on the server; “key loaded” is not a claim that an API call succeeded. The UI does not edit keys or source configuration.
+
+Edits are saved beside the original as `article-edited.md`, `reporting-notes-edited.md` or `reporting-brief-edited.md`. The workflow's verified original and audit snapshot remain unchanged. Download returns the saved edited copy when one exists. Save edits before downloading; edits do not automatically rerun verification, and new claims need editorial checking. Unsaved text is kept while navigating this browser tab, but closing/reloading the tab can lose it.
+
+Closing the browser does not stop reporting. Stopping the server ends the UI; existing graph checkpoints and saved documents remain available after restarting. A clean Ctrl+C shutdown waits for active work to finish. After an unexpected shutdown, reopen a saved run and use **Continue reporting** to resume a saved step. A run interrupted before its very first checkpoint must be started again.
+
+The server binds only to `127.0.0.1`. Request-origin, host and session-token checks protect local actions, and source Markdown is rendered without executing HTML. This is a single-user local app; there is no public hosting, login or multi-user access control. Do not expose this server to the internet.
+
+To try the UI without credentials, start with a separate sample workspace:
+
+```bash
+python -m deluxe --home .deluxe/ui-demo serve
+```
+
+Choose **Fictional sample**, then **Find stories**. Approving the default question produces an article; choosing the Kenyan-payout question produces a reporting brief. Duplicate protection also applies to sample stories: use a different `--home` if you want a fresh run of the same fictional event with another angle.
 
 ## Offline demonstration
 
@@ -142,11 +181,15 @@ Do not repeat `--select` or `--question`: the original choice and question are a
 
 ```bash
 python -m unittest discover -v
+# Optional frontend controller tests; requires Node.js 20+ but no npm install:
+node tests/ui.test.cjs
 ```
 
 The standard-library test suite covers both fixture outcomes, RSS/Atom/date handling, grouped syndication, duplicate ledgers, budget enforcement, unavailable sources/search, missing credentials, fabricated supporting passages, verification rejection and invalid editorial choices. Model-routing tests cover Groq success without Qwen credentials, provider request formats and separate keys, HTTP/JSON failure fallback, missing keys, both providers failing, unchanged task data and returning to Groq on the next call. Real LangGraph tests launch separate CLI processes to prove shortlist persistence, revised-question persistence, approval recovery after a research failure, dismissal and duplicate detection after restart. These integration tests are explicitly skipped if LangGraph is absent; install dependencies to run the complete suite.
 
 Live API compatibility, provider permissions, model quality on actual news and full feed/page availability require live credentials and network access. Offline tests do not claim to verify those.
+
+Web tests exercise the HTTP application dispatcher and real background LangGraph jobs without binding a socket. They cover both sample outcomes, authentication/configuration separation, origin/host/token checks, traversal prevention, saved-run restart, retries, duplicate actions, document editing and downloads. Dependency-free JavaScript tests cover view logic, question submission, retry payloads, source HTML escaping and Markdown editing. A browser visual pass still needs an environment that permits the local server and browser processes.
 
 ## Remaining work and current limitations
 
@@ -155,4 +198,4 @@ Live API compatibility, provider permissions, model quality on actual news and f
 - **Partial duplicate handling:** canonical URLs and model-proposed event keys are stored, but no content-fingerprint/syndication detector is implemented. Model-assisted matching can miss paraphrases, and the URL ledger can suppress a fresh development posted at an already-seen URL.
 - **Verification removes rather than rewrites:** the verifier checks semantic support and scope; unsupported paragraphs are dropped or a brief is produced. There is no automated revision-and-reverification loop. Independent-source discovery is guided by prompts rather than a mandatory corroboration policy.
 - **No automatic API retries/backoff or token-cost accounting:** failed graph steps can be resumed manually. The budget limits search calls only.
-- **No browser-rendered retrieval, interview execution or hands-on product testing:** inaccessible pages and required human reporting become explicit gaps/tasks. A GUI, scheduling and publication integrations are outside the requested CLI version.
+- **No browser-rendered source retrieval, interview execution or hands-on product testing:** inaccessible pages and required human reporting become explicit gaps/tasks. Scheduling, public hosting, multi-user access and publication integrations remain outside this local version.
